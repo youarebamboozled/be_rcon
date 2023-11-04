@@ -14,7 +14,6 @@ pub struct RConClient {
     server_addr: SocketAddr,
     sequence: Arc<Mutex<u8>>,
     send_pending: Arc<AtomicBool>,
-    last_send_time: Arc<AtomicU64>,
 }
 
 impl RConClient {
@@ -27,9 +26,6 @@ impl RConClient {
             server_addr,
             sequence: Arc::new(Mutex::new(0)),
             send_pending: Arc::new(AtomicBool::new(false)),
-            last_send_time: Arc::new(AtomicU64::new(
-                std::time::SystemTime::now().elapsed()?.as_millis() as u64,
-            )),
         })
     }
 
@@ -48,22 +44,17 @@ impl RConClient {
     }
 
     pub async fn send_keep_alive_packet(&self) -> Result<(), Box<dyn Error>> {
-        let now = time::Instant::now();
-        if now.elapsed().as_secs() >= 45 {
-            let packet = [0; 2];
-            let socket = self.socket.lock().await;
-            socket.send_to(&packet, &self.server_addr).await?;
-            self.last_send_time
-                .store(now.elapsed().as_millis() as u64, Ordering::Relaxed);
-            println!("Keep-alive packet sent");
-        }
+        let packet = create_command_packet(*self.sequence.lock().await, "");
+        let socket = self.socket.lock().await;
+        socket.send_to(&packet, &self.server_addr).await?;
+        println!("Keep-alive packet sent");
         Ok(())
     }
 
     pub async fn start_keep_alive_task(&self) {
         let client_clone = self.clone();
         tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_secs(45));
+            let mut interval = time::interval(Duration::from_secs(15));
             loop {
                 interval.tick().await;
                 if let Err(e) = client_clone.send_keep_alive_packet().await {
@@ -74,7 +65,6 @@ impl RConClient {
     }
 
     pub async fn send_command(&self, command: &str) -> Result<(), Box<dyn Error>> {
-        println!("Sending command: {command}");
         self.send_pending.store(true, Ordering::Release);
         let sequence = {
             let seq_lock = self.sequence.lock().await;
@@ -84,13 +74,10 @@ impl RConClient {
         let command_packet = create_command_packet(sequence, command);
 
         let socket = {
-            println!("Attempting to lock the socket for sending...");
             let sock_lock = self.socket.lock().await;
-            println!("Socket locked for sending.");
             sock_lock
         };
         socket.send_to(&command_packet, &self.server_addr).await?;
-        println!("Releasing the socket lock after sending.");
         self.send_pending.store(false, Ordering::Release);
         Ok(())
     }
@@ -98,11 +85,10 @@ impl RConClient {
     pub async fn start_listening(&mut self) -> Result<(), Box<dyn Error>> {
         let socket_clone = self.socket.clone();
         let server_addr_clone = self.server_addr;
-        let sequence_clone = self.sequence.clone();
         let send_pending_clone = self.send_pending.clone();
 
         tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_millis(100)); // Check every 100ms
+            let mut interval = time::interval(Duration::from_millis(100));
             loop {
                 interval.tick().await;
                 if send_pending_clone.load(Ordering::Acquire) {
@@ -127,8 +113,6 @@ impl RConClient {
                     Ok(Ok((amt, _))) => {
                         if amt > 7 {
                             let response_type = buf[7];
-                            let sequence = update_sequence(&sequence_clone, buf[8]).await;
-
                             match response_type {
                                 0x02 => {
                                     handle_server_message(
@@ -136,7 +120,7 @@ impl RConClient {
                                         &buf,
                                         amt,
                                         &server_addr_clone,
-                                        sequence,
+                                        0,
                                     )
                                     .await;
                                 }
@@ -146,7 +130,7 @@ impl RConClient {
                                         &buf,
                                         amt,
                                         &server_addr_clone,
-                                        sequence,
+                                        0,
                                     )
                                     .await;
                                 }
@@ -177,10 +161,11 @@ async fn handle_command_server_message(
     server_addr: &SocketAddr,
     sequence: u8,
 ) {
-    todo!()
+    let message = String::from_utf8_lossy(&buf[9..amt]).to_string();
+    println!("Command message: {}", message);
 }
 
-async fn update_sequence(sequence_clone: &Arc<Mutex<u8>>, new_value: u8) -> u8 {
+async fn update_sequence(sequence_clone: &mut Arc<Mutex<u8>>, new_value: u8) -> u8 {
     let mut seq_lock = sequence_clone.lock().await;
     *seq_lock = new_value;
     new_value

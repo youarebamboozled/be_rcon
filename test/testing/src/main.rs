@@ -4,7 +4,7 @@ use std::io::stdin;
 #[tokio::main]
 async fn main() {
     let passwd = std::env::var("password").unwrap();
-    let client = RConClient::new("138.201.129.116:25010", "0.0.0.0:0").await.expect("Failed to create client");
+    let client = RConClient::new("138.201.129.116:2302", "0.0.0.0:0").await.expect("Failed to create client");
     client.start_keep_alive_task().await;
     if client.login(&passwd).await.expect("Failed to login") {
         println!("Logged in successfully");
