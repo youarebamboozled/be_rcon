@@ -7,6 +7,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::time;
+use crate::callback::CallbackManager;
 
 #[derive(Clone)]
 pub struct RConClient {
@@ -14,6 +15,7 @@ pub struct RConClient {
     server_addr: SocketAddr,
     sequence: Arc<Mutex<u8>>,
     send_pending: Arc<AtomicBool>,
+    pub callback_manager: CallbackManager,
 }
 
 impl RConClient {
@@ -26,6 +28,7 @@ impl RConClient {
             server_addr,
             sequence: Arc::new(Mutex::new(0)),
             send_pending: Arc::new(AtomicBool::new(false)),
+            callback_manager: CallbackManager::new(),
         })
     }
 
@@ -47,7 +50,6 @@ impl RConClient {
         let packet = create_command_packet(*self.sequence.lock().await, "");
         let socket = self.socket.lock().await;
         socket.send_to(&packet, &self.server_addr).await?;
-        println!("Keep-alive packet sent");
         Ok(())
     }
 
@@ -86,6 +88,7 @@ impl RConClient {
         let socket_clone = self.socket.clone();
         let server_addr_clone = self.server_addr;
         let send_pending_clone = self.send_pending.clone();
+        let callback_manager_clone = self.callback_manager.clone();
 
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_millis(100));
@@ -115,7 +118,7 @@ impl RConClient {
                             let response_type = buf[7];
                             match response_type {
                                 0x02 => {
-                                    handle_server_message(
+                                    callback_manager_clone.handle_server_message(
                                         socket_clone.clone(),
                                         &buf,
                                         amt,
@@ -125,13 +128,7 @@ impl RConClient {
                                     .await;
                                 }
                                 0x01 | 0x00 => {
-                                    handle_command_server_message(
-                                        socket_clone.clone(),
-                                        &buf,
-                                        amt,
-                                        &server_addr_clone,
-                                        0,
-                                    )
+                                    callback_manager_clone.handle_command_server_message(&buf, amt)
                                     .await;
                                 }
                                 _ => {
@@ -154,46 +151,19 @@ impl RConClient {
     }
 }
 
-async fn handle_command_server_message(
-    socket: Arc<Mutex<UdpSocket>>,
-    buf: &[u8; 51200],
-    amt: usize,
-    server_addr: &SocketAddr,
-    sequence: u8,
-) {
-    let message = String::from_utf8_lossy(&buf[9..amt]).to_string();
-    println!("Command message: {}", message);
-}
 
-async fn update_sequence(sequence_clone: &mut Arc<Mutex<u8>>, new_value: u8) -> u8 {
-    let mut seq_lock = sequence_clone.lock().await;
-    *seq_lock = new_value;
-    new_value
-}
 
-async fn handle_server_message(
-    socket: Arc<Mutex<UdpSocket>>,
-    buf: &[u8],
-    amt: usize,
-    server_addr: &SocketAddr,
-    sequence: u8,
-) {
-    let message = String::from_utf8_lossy(&buf[9..amt]).to_string();
-    println!("Server message: {}", message);
-    if let Err(e) = send_ack(socket, server_addr, sequence).await {
-        eprintln!("Failed to send ack: {}", e);
-    }
-}
-
-async fn send_ack(
+pub(crate) async fn send_ack(
     socket: Arc<Mutex<UdpSocket>>,
     server_addr: &SocketAddr,
     sequence: u8,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), String> {
     let ack_packet = create_server_message_ack_packet(sequence);
 
     let socket_guard = socket.lock().await;
-    socket_guard.send_to(&ack_packet, server_addr).await?;
+    if let Err(err) = socket_guard.send_to(&ack_packet, server_addr).await {
+        return Err(err.to_string())
+    };
 
     Ok(())
 }

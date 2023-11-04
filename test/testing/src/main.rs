@@ -12,6 +12,13 @@ async fn main() {
         tokio::spawn(async move {
             listening_client.start_listening().await.unwrap();
         });
+        // Register a callback
+        client.callback_manager.register_callback(
+            be_rcon::CallbackType::CommandMessage,
+            Box::new(|con| {
+                println!("Received a server message: {}", con);
+            }),
+        ).await;
         loop {
             let mut buf = String::new();
             stdin().read_line(&mut buf).expect("TODO: panic message");
