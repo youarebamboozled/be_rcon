@@ -1,19 +1,18 @@
+use crate::callback::CallbackManager;
 use crate::packet::{create_command_packet, create_login_packet, create_server_message_ack_packet};
 use std::error::Error;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::time;
-use crate::callback::CallbackManager;
 
 #[derive(Clone)]
 pub struct RConClient {
     socket: Arc<Mutex<UdpSocket>>,
     server_addr: SocketAddr,
-    sequence: Arc<Mutex<u8>>,
     send_pending: Arc<AtomicBool>,
     pub callback_manager: CallbackManager,
 }
@@ -26,7 +25,6 @@ impl RConClient {
         Ok(Self {
             socket: Arc::new(Mutex::new(socket)),
             server_addr,
-            sequence: Arc::new(Mutex::new(0)),
             send_pending: Arc::new(AtomicBool::new(false)),
             callback_manager: CallbackManager::new(),
         })
@@ -46,21 +44,24 @@ impl RConClient {
         Ok(false)
     }
 
-    pub async fn send_keep_alive_packet(&self) -> Result<(), Box<dyn Error>> {
-        let packet = create_command_packet(*self.sequence.lock().await, "");
+    pub async fn send_keep_alive_packet(&self) -> Result<(), String> {
+        let packet = create_command_packet(0, "");
         let socket = self.socket.lock().await;
-        socket.send_to(&packet, &self.server_addr).await?;
+        if let Err(err) = socket.send_to(&packet, &self.server_addr).await {
+            return Err(err.to_string())
+        };
         Ok(())
     }
 
     pub async fn start_keep_alive_task(&self) {
         let client_clone = self.clone();
+        let callback_manager_clone = self.callback_manager.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(15));
             loop {
                 interval.tick().await;
                 if let Err(e) = client_clone.send_keep_alive_packet().await {
-                    eprintln!("Error sending keep-alive packet: {}", e);
+                    callback_manager_clone.handle_error(e.to_string()).await;
                 }
             }
         });
@@ -68,10 +69,7 @@ impl RConClient {
 
     pub async fn send_command(&self, command: &str) -> Result<(), Box<dyn Error>> {
         self.send_pending.store(true, Ordering::Release);
-        let sequence = {
-            let seq_lock = self.sequence.lock().await;
-            *seq_lock
-        };
+        let sequence = 0;
 
         let command_packet = create_command_packet(sequence, command);
 
@@ -118,18 +116,20 @@ impl RConClient {
                             let response_type = buf[7];
                             match response_type {
                                 0x02 => {
-                                    callback_manager_clone.handle_server_message(
-                                        socket_clone.clone(),
-                                        &buf,
-                                        amt,
-                                        &server_addr_clone,
-                                        0,
-                                    )
-                                    .await;
+                                    callback_manager_clone
+                                        .handle_server_message(
+                                            socket_clone.clone(),
+                                            &buf,
+                                            amt,
+                                            &server_addr_clone,
+                                            0,
+                                        )
+                                        .await;
                                 }
                                 0x01 | 0x00 => {
-                                    callback_manager_clone.handle_command_server_message(&buf, amt)
-                                    .await;
+                                    callback_manager_clone
+                                        .handle_command_server_message(&buf, amt)
+                                        .await;
                                 }
                                 _ => {
                                     todo!()
@@ -151,8 +151,6 @@ impl RConClient {
     }
 }
 
-
-
 pub(crate) async fn send_ack(
     socket: Arc<Mutex<UdpSocket>>,
     server_addr: &SocketAddr,
@@ -162,7 +160,7 @@ pub(crate) async fn send_ack(
 
     let socket_guard = socket.lock().await;
     if let Err(err) = socket_guard.send_to(&ack_packet, server_addr).await {
-        return Err(err.to_string())
+        return Err(err.to_string());
     };
 
     Ok(())

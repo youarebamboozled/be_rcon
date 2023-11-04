@@ -1,6 +1,5 @@
 use crc::crc32;
 
-
 pub fn create_login_packet(password: &str) -> Vec<u8> {
     let mut login_packet = vec![0x42, 0x45, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00];
     login_packet.extend_from_slice(password.as_bytes());

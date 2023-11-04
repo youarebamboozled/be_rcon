@@ -39,11 +39,7 @@ impl CallbackManager {
         }
     }
 
-    pub(crate) async fn handle_command_server_message(
-        &self,
-        buf: &[u8; 51200],
-        amt: usize,
-    ) {
+    pub(crate) async fn handle_command_server_message(&self, buf: &[u8; 51200], amt: usize) {
         let message = String::from_utf8_lossy(&buf[9..amt]).to_string();
         self.invoke(CallbackType::CommandMessage, message).await;
     }
@@ -59,7 +55,11 @@ impl CallbackManager {
         let message = String::from_utf8_lossy(&buf[9..amt]).to_string();
         self.invoke(CallbackType::ServerMessage, message).await;
         if let Err(e) = crate::connection_manager::send_ack(socket, server_addr, sequence).await {
-            self.invoke(CallbackType::ServerErrorMessage, e).await;
+            self.handle_error(e).await;
         }
+    }
+
+    pub(crate) async fn handle_error(&self, err: String) {
+        self.invoke(CallbackType::ServerErrorMessage, err).await;
     }
 }
