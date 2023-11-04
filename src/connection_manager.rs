@@ -111,7 +111,7 @@ impl RConClient {
                 drop(socket_guard);
                 match result {
                     Ok(Ok((amt, _))) => {
-                        if amt > 7 {
+                        if amt > 9 {
                             let response_type = buf[7];
                             match response_type {
                                 0x02 => {
