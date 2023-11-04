@@ -17,7 +17,6 @@ pub fn create_command_packet(sequence: u8, command: &str) -> Vec<u8> {
     // Calculate CRC32 Checksum of the payload (excluding header)
     let checksum = crc32::checksum_ieee(&command_packet[6..]);
     command_packet[2..6].copy_from_slice(&checksum.to_le_bytes());
-    println!("{:02x?}", command_packet);
     command_packet
 }
 
